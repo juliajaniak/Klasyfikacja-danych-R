@@ -1,0 +1,403 @@
+---
+title: "Raport z projektu zaliczeniowego"
+author: "Julia Janiak"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+krab<-read.csv("CrabAgePrediction.csv")
+
+#install.packages("moments")
+library(moments)
+#install.packages("outliers")
+library(outliers)
+#install.packages("cluster")
+library(cluster)
+#install.packages("randomForest")
+library(randomForest)
+#install.packages("devtools")
+library(devtools)
+#devtools::install_github("jenzopr/silvermantest")
+library(silvermantest)
+#install.packages("heatmaply")
+library(heatmaply)
+#install.packages("plotly")
+library(plotly)
+#install.packages("infotheo")
+library(infotheo)
+#install.packages("entropy")
+library(entropy)
+#install.packages("fastcluster")
+library(fastcluster)
+#install.packages("klaR")
+library(klaR)
+#install.packages("tidyverse")
+library(tidyverse)
+#install.packages("MASS")
+library(MASS)
+#install.packages("mda")
+library(mda)
+#install.packages("umap")
+library(umap)
+#install.packages("caret")
+library(caret)
+#install.packages("factoextra")
+library(factoextra)
+```
+
+## Opis danych i cel projektu
+Zebrane dane zawieraja zbior informacji na temat pomiaru cech fizycznych krabow hodowlanych.
+
+Zbior ten ma 9 roznych cech:
+
+- Plec (M - Mezczyzna, K - Kobieta, I - Nieokreslony),
+
+- Dlugosc kraba (w stopach),
+
+- Srednica kraba (w stopach),
+
+- Wysokosc kraba (w stopach),
+
+- Waga kraba (w uncjach),
+
+- Waga kraba bez skorupy (w uncjach),
+
+- Waga samych wnetrznosci kraba (w uncjach),
+
+- Waga skorupy kraba (w uncjach),
+
+- Wiek kraba (w miesiacach).
+
+Zestaw tych danych posiada 3893 obserwacje. Kazdy krab nalezy z zalozenia do jednej z trzech klas (podzial na dana plec). Zatem badamy 8 roznych cech.
+
+Dane pozyskane zostaly z https://www.kaggle.com/datasets/sidhus/crab-age-prediction
+
+Celem projektu jest przeprowadzenie klasyfikacji danych bez nadzoru i pod nadzorem na podstawie wyselekcjnowanych 9 parametrów.
+
+Plan analizy:
+
+1. Prezentacja statystyk sumarycznych, histogramow i wykresow gestosci
+
+2. Analiza jednowymiarowa obserwacji odstajacych oraz wielomodalnosci
+
+3. Analiza korelacji i redukcja wymiaru metoda PCA i UMAP
+
+4. Analiza skupien - klastrowanie
+
+5. Klasyfikacja pod nadzorem z uzyciem lasow losowych
+
+6. Analiza z uzyciem LDA i QDA
+
+
+## 1. Statystyki sumaryczne i histogramy
+
+Prezentacja naszych danych:
+```{r dane}
+head(krab)
+```
+
+```{r statystyki sumaryczne}
+cat('podsumowanie statystyczne','\n')
+apply(krab[,-1],2,summary)
+cat('odchylenie standardowe','\n')
+apply(krab[,-1],2,sd)
+cat('skosnosc','\n')
+apply(krab[,-1],2,skewness)
+```
+
+Wniosek: Zmienna Weight ma zdecydowanie najwieksza wariancje oraz najwieksza wartosc srednia sposrod innych zmiennych. Oznacza to, ze ta zmienna ma duza zmiennosc danych. Natomiast najmniejsza zmiennoscia danych w badanej probce wykazuje sie zmienna Height, jednak widzimy w podsumowaniu statystycznym, ze jej wartosc maksymalna znacznie odstaje od pozostalych jej wartosci. Zmienne Length i Diameter maja ujemna skosnosc, co wskazuje na lewoskosnosc, natomiast pozostale zmienne sa prawoskosne.
+
+```{r histogramy}
+for(i in 2:9) hist(krab[,i],main=colnames(krab)[i])
+```
+
+Wniosek: Z uzyskanych histogramow mozna wyczytac, ze zmienna Height ma na pewno odznaczajace sie wartosci odstajace, poniewaz jej histogram jest skupiony tylko na jednej stronie rozkladu. Wiadomo juz, ze ta zmienna ma duza skosnosc, co takze wplywa na asymetrie rozkladu. Zmienne Length i Diameter to rozklady lewoskosne, natomiast zmienna Age jest prawoskosna. Nie ma podejrzen co do rozkladu normalnego, jednak trzeba zbadac zmienne Height, Weight, Shucked.Weight, Viscera.Weight i Shell.Weight na wielomodalnosc.
+
+```{r density}
+for(i in 2:9) plot(density(krab[,i]),main=colnames(krab)[i])
+```
+
+Wniosek: Z badania gestosci nie wynika jasno, ktora zmienna sposrod wszystkich ma wiekszy potencjal jako zmienna rozrozniajaca pomiedzy plciami kraba, poniewaz wykresy te nie wskazuja ani na wielomodalnosc ani na rozklad normalny.
+
+Mozemy zauwazyc pewna zaleznosc, mianowicie na histogramie oraz na wykresie gestosci zmienne Length oraz Diameter sa do siebie bardzo podobne. Zastosujmy wykres kwantyl-kwantyl.
+
+```{r qqplot}
+qqplot(krab$Length,krab$Diameter,main='Wykres kwantyl-kwantyl')
+abline(0,1)
+```
+
+Wniosek: Obie zmienne maja mocno podobny do siebie rozklad, poniewaz punkty ulozyly sie wzdluz linii referencyjnej. Mowi nam to, ze miedzy nimi jest duza korelacja. Jest to logiczne, poniewaz dlugosc i srednica kraba powinny byc scisle powiazane miedzy soba.
+
+## 2. Analiza jednowymiarowa obserwacji odstajacych oraz wielomodalnosci
+```{r Shapiro Wilk}
+apply(krab[,-1],2,function(x) shapiro.test(x))
+```
+
+Wniosek: Zatem tak jak zauwazono przy histogramach, zadna zmienna nie ma rozkladu normalnego, a przy dopuszczalnym poziomie bledu 5% Test Shapiro-Wilka to udowodnil.
+
+
+```{r wielomodalnosc}
+apply(krab[,4:8],2,function(x) silverman.test(x,k=1))
+```
+
+Wniosek: Przy dopuszczalnym poziomie bledu 5% test Silvermana pokazal ze rozklad zmiennej Height jest naprawdopodobniej wielomodalny. Pozostale rozklady wskazuja bardziej na teze, ze sa one jednomodalne. Mozna zatem ocenic czy rozklad zmiennej Height jest wiecej niz bimodalny.
+
+```{r mody}
+nr.modes(hist(krab$Height,plot=F)$counts)
+```
+
+Wniosek: Oznacza to zatem, ze nie da sie sensownie oszacowac tego parametru, poniewaz rozklad jest za malo zmienny. Zatem zadna zmienna nie jest wielomodalna.
+
+Sprawdzmy zatem ktore zmienne maja obserwacje odstajace. Jest to wazny aspekt przy klastrowaniu.
+```{r Grubbs.test}
+apply(krab[,-1],2,function(x) grubbs.test(x))
+```
+
+Wniosek: Przyjmujac kryterium bledu 5% zmienne Height, Shucked.Weight, Viscera.Weight, Shell.Weight i Age maja obserwacje odstajace, podczas gdy pozostale zmienne maja zbyt malo wystarczajacych dowodow na to, ze istnieja w ich przypadku wartosci odstajace.
+
+
+## 3. Analiza korelacji i redukcja wymiaru metoda PCA i UMAP
+Korelacje policzymy z uzyciem dwoch estymatorow: Pearson'a i Kendall'a aby uniknac sytuacji kiedy mamy zaklocenie zwiazane z brakiem rozkladu normalnego.
+
+```{r Pearson}
+heatmaply_cor(cor(krab[,-1],method = 'pearson'))
+```
+
+Wniosek: Analiza korelacji pokazuje, ze wszystkie zmienne sa dodatnio zalezne. Zmienna Age ma najmniejsza korelacje wobec innych zmiennych, a najnizsza korelacje ma z zmienna Shucked.Weight (na poziomie okolo 0.4). W naszym zestawie danych slabiej dodatnio skorelowana jest rowniez zmienna Height z innymi zmiennymi (glownie na poziomie 0.7-0.8). Zmienne Shucked.Weight, Viscera.Weight, Weight, Shell.Weight, Diameter i Length sa silnie dodatnio zalezne. Najsilniejsza korelacje widzimy pomiedzy zmienna Diameter i Length (na poziomie prawie 0.99). 
+
+
+```{r Kendall}
+heatmaply_cor(cor(krab[,-1],method = 'kendall'))
+```
+
+Wniosek: Metoda Kendall'a daje bardzo podobne rezultaty do metody Pearson'a. Zmienia sie jedynie wielkosc poziomow korelacji, natomiast jest ona zachowana dokladnie w ten sam sposob. 
+
+
+Redukcja wymiaru PCA:
+```{r pca}
+prcomp(krab[,-1])->pca.krab
+summary(pca.krab)
+df.pca=data.frame(pc1=pca.krab$x[,1],pc2=pca.krab$x[,2],pc3=pca.krab$x[,3],kl=as.factor(krab$Sex))
+plot_ly(df.pca,x=~pc1,y=~pc2,z=~pc3,color = ~kl,type='scatter3d')
+```
+
+Wniosek: Widzimy, ze PC1 ma znaczna wariancje w porownaniu z innymi wartosciami, co oznacza, że zawiera ona najwięcej zmienności danych. PC1 opisuje zdecydowanie wiekszosc danych (96%), a nastepnie razem z PC2 i PC3 jest to zobrazowanie danych na poziomie 99,53%. Na 3 wymiarowej reprezentacji PCA widzimy, ze zadna plec nie jest znaczaco wyrozniona i wyodrebniona od reszty. Mozemy zaobserwowac jedynie ze plec nieokreslona (I) ma niewielkie wyodrebnienie swojej czesci od pozostalych z boku drugiej skladowej glownej.
+
+```{r rotation}
+df.rot<-data.frame(r1=pca.krab$rotation[,1],r2=pca.krab$rotation[,2],r3=pca.krab$rotation[,3])
+plot_ly(df.rot,x=~r1,y=~r2,z=~r3)
+pca.krab$rotation[,1]
+```
+
+Wniosek: PC1 jest glownie w kierunku przeciwnym do zmiennej Weight, czyli wplywa ona na PC1 w bardzo duzym stopniu. Natomiast zmienna Height ma bardzo niski wplyw na PC1.
+
+Redukcja wymiaru metoda UMAP:
+
+```{r umap}
+umap.krab<-umap(krab[,-1],n_components = 3)
+summary(umap.krab$layout)
+df.umap=data.frame(um1=umap.krab$layout[,1],um2=umap.krab$layout[,2],um3=umap.krab$layout[,3],kl=as.factor(krab$Sex))
+plot_ly(df.umap,x=~um1,y=~um2,z=~um3,color = ~kl,type='scatter3d')
+```
+
+Wniosek: Po redukcji do trzech wymiarow mozemy zaobserwowac w podsumowaniu jakie wartosci przyjmuje dany wymiar. Wszystkie cechy maja wartosc oczekiwana rowna 0, co oznacza ze wymiar zostal dobrze znormalizowany. Sa one w miare rowno porozdzielane. W porownaniu z PCA, na 3 wymiarowym wykresie UMAP, widzimy juz wieksze wyodrebnienie sie plci nieokreslonej od pozostalych plci krabow. Zatem wskazuje nam to, ze plec nieokreslona (I) bedzie bardziej rozroznialna. Natomiast plcie zenska i meska sa bardzo mocno ze soba pomieszane na wykresie, co wskazuje na mala rozroznialnosc pomiedzy nimi.
+
+## 4. Analiza skupien - klastrowanie
+
+Aby zaczac klastrowanie warto policzyc entropie:
+```{r entropia}
+hist.krab<-lapply(krab[,-1],function(x) hist(x,plot=F))
+e.krab<-sapply(hist.krab,function(x) entropy(x$counts))
+e.krab
+```
+
+Zeby wyznaczyc dobrze entropie naszej zmiennej, na podstawie ktorej mozemy przeprowadzic klastrowanie, trzeba zmienic ja na zmienna o wartosciach liczbowych (klasy 1,2,3).
+
+```{r entropia klas}
+plec_klasy<-ifelse(krab$Sex == "M", 3,
+                   ifelse(krab$Sex == "F", 2,
+                          ifelse(krab$Sex == "I", 1, NA)))
+entropy(plec_klasy)
+```
+
+Wniosek: Zmienna Sex (po zamianie wartosci na liczby calkowite) ma wieksza entropie niz pozostale zmienne w zbiorze danych krab, a wiec do klayfikacji trzeba bedzie uzyc algorytmu, ktory wykorzystuje wiele zmiennych.
+
+
+Zaczniemy od algorytmu k-srednich przy k=3 (bo wiemy ze sa trzy podzialy plci kraba, dzieki czemu mozemy wyznaczyc dany podzial na klasy):
+
+```{r k-srednich}
+kmeans(krab[,-1], centers=3)->km.krab.3
+df.km<-data.frame(x=pca.krab$x[,1],y=pca.krab$x[,2],z=pca.krab$x[,3],type=as.factor(km.krab.3$cluster))
+plot_ly(df.km,x=~x,y=~y, z=~z,color=~type,type ='scatter3d')
+```
+
+Wniosek: Klastrowanie metoda k-srednich jest wzdluz wartosci PC1. Wszystkie trzy klastry sa bardzo blisko siebie, wrecz na siebie zachodza, jednak widzimy dobrze ich wyodrebnienie. Sprawdzmy czy to klastrowanie jest zgodne z podzialem na plec krabow.
+
+```{r confusion}
+table(krab$Sex,km.krab.3$cluster)
+```
+
+Wniosek: Do pierwszego klastra nalezy glownie plec nieokreslona (I), jednak nadal mamy wartosci plci zenskiej (F) i meskiej (M). W 2 klastrze mamy juz niejednoznaczny podzial na plec meska i zenska w bardzo podobnych wartosciach, za to malo wartosci plci nieokreslonej. 3 klaster ma lekka przewage plci meskiej, jednak nadal ma duze rozbicie takze na plec zenska. Klastrowanie slabo pokrywa sie z podzialem na plec u krabow, poniewaz wyszlo niejednoznacznie.
+
+Mozemy takze sprobowac metody klastrowania dla duzej ilosci danych - CLARA.
+```{r clara}
+clara(krab[,-1],k=3)->clara.krab.3
+df.clara=data.frame(x=pca.krab$x[,1],y=pca.krab$x[,2],z=pca.krab$x[,3],kl=as.factor(clara.krab.3$cluster))
+plot_ly(df.clara,x=~x,y=~y, z=~z,color = ~kl,type='scatter3d')
+```
+
+Wniosek: Klastrowanie metoda clara rowniez dalo nam podzial, w ktorym 3 klastry sa bardzo blisko siebie. Przewage odznacza klasa 3, zas klasa 2 zawiera najmniej wartosci.
+
+Spojrzmy, czy moze to klastrowanie jest zgodne z podzialem na plec krabow:
+```{r confusion clara}
+table(krab$Sex,clara.krab.3$cluster)
+```
+
+Wniosek: Uzyskany wynik nadal jest niejednoznaczny i klastrowanie slabo pokrywa sie z podzialem na plec u krabow. W 1 klastrze sa wartosci mocno usrednione, kazda wartosc pasuje prawie tak samo, chociaz plec meska wykazuje przewage. Natomiast w 2 klastrze dopiero mamy dominacje plci nieokreslonej. 3 klaster ma podzial na plec meska i zenska.
+
+Wybor ilosci klastrow (metoda lokcia):
+```{r lokiec}
+wss<-rep(NA,9)
+for(i in 1:9) wss[i]<-kmeans(krab[,-1],centers=i+1)$tot.withinss
+plot(1:9,wss,main='Metoda lokcia')
+```
+
+Wniosek: Zatem oznacza to, ze optymalnie jest podzielic zbior danych na 3 lub 4 klastry, poniewaz w tym miejscu krzywa zaczyna wolniej malec.
+
+Mozemy takze zastosowac metode silhouette, aby wybrac ilosc klastrow:
+```{r silhouette}
+fviz_nbclust(krab[,-1], kmeans, method='silhouette')
+```
+
+Wniosek: Patrzac tutaj na inna metode widzimy, ze jest ona bardziej sklonna ku temu, aby podzielic zbior na 2 klastry. 
+
+Klastrowanie hierarchiczne:
+```{r hclust}
+plot(hclust(dist(krab[,-1],method = 'minkowski',p=1)))
+```
+
+Wniosek: Typowe klastrowanie hierarchiczne przy tak duzym zbiorze danych nie bedzie optymalnym rozwiazaniem, ze wzgledu na zlozonosc obliczeniowa. Natomiast gdy wykorzystamy bardziej dostosowana i szybsza metode do naszego zbioru danych (hclust), uzyskujemy oczekiwany dendogram. Drzewo hierarchiczne na samym poczatku zostalo podzielone na 2, a pozniej na 3. Nastepnie zaczynaja sie tworzyc zbyt male podgrupy. Oznacza to, ze najlepiej jest wybrac podzial na 3 klastry wedlug tej metody.
+
+
+## 5. Klasyfikacja pod nadzorem z uzyciem lasow losowych
+```{r las losowy}
+rfcv(krab[,-1],as.factor(krab$Sex))->rfcv.krab
+rfcv.krab$error.cv
+```
+
+Wniosek: Mozliwie niski blad walidacji krzyzowej i najbardziej optymalny mamy przy 2 zmiennych. Wszelkie inne podzialy przyniosa nam wiecej bledow. Jednak i tak przy kazdej zmiennej musimy sie liczyc z tym, ze bedzie ona malo miarodajna.
+Wybierzmy te 2 zmienne.
+
+```{r las losowy zmienne}
+randomForest(krab[,-1],as.factor(krab$Sex),importance = T,proximity=TRUE)->rf.krab.imp
+varImpPlot(rf.krab.imp)
+```
+
+Wniosek: Zmienne sa calkowicie podzielone, jednak kierujac sie Mean Decrease Gini, zmienne Viscera.Weight i Weight sa najlepsze do tego lasu losowego.
+
+```{r las losowy final}
+randomForest(krab[,c(5,7)],as.factor(krab$Sex))->rf.krab.final
+rf.krab.final$confusion
+```
+
+Wniosek: Optymalny model lasu losowego zawierajacy 2 zmienne daje maksymalny blad klasyfikacji na poziomie 61%! Oznacza to, ze model lasu losowego ma bardzo niska skutecznosc w tym zestawie danych.
+
+Mozemy takze przeprowadzic analize lasu losowego przy uzyciu danych treningowych i testowych, aby ocenic czy jest to lepszy model, dla ktorego las losowy mialby wyzszy poziom skutecznosci w klasyfikacji danych.
+
+```{r las losowy z podzialem na dane}
+set.seed(12345)
+ind <- sample(c(TRUE, FALSE), nrow(krab), replace = TRUE, prob = c(0.7, 0.3))
+train <- krab[ind,]
+test <- krab[!ind,]
+
+train$Sex<-as.factor(train$Sex)
+test$Sex<-as.factor(test$Sex)
+
+rf <- randomForest(Sex~., data=train, proximity=TRUE,mtry=5)
+train.tree.pr <- predict(rf, train)
+confusionMatrix(train.tree.pr, train$Sex)
+```
+
+Wniosek: Las losowy jest przygotowany w dobry sposob na podstawie danych treningowych. Mozemy wiec przejsc do testowania na naszych danych testowych.
+
+```{r dane testowe}
+test.tree.pr <- predict(rf, test)
+confusionMatrix(test.tree.pr, test$Sex)
+```
+
+Wniosek: Przy uzyciu lasu losowego z wykorzystaniem danych treningowych i testowych uzyskujemy wieksza skutecznosc modelu na poziomie okolo 55%. Najwiecej problemow model wykazuje przy rozroznianiu plci meskiej od zenskiej. Procent skutecznosci w rozroznianiu plci nieokreslonej od pozostalych to 80%.
+
+## 6. Analiza z uzyciem LDA i QDA
+```{r lda}
+set.seed(12345)
+train.ind<-sample(c(TRUE,FALSE),nrow(krab),prob=c(0.7,0.3),replace=T)
+train.krab<-krab[train.ind,]
+test.krab<-krab[!train.ind,]
+
+lda(Sex~.,data=train.krab)->lda.krab
+lda.krab
+
+train.krab$Sex<-as.factor(train.krab$Sex)
+plot(lda.krab, col=as.numeric(train.krab$Sex))
+```
+
+Wniosek: Prawdopodobienstwa wystapienia danej grupy plci sa na podobnym poziomie. Mozemy takze wyczytac, ze dla plci nieokreslonej (I) mamy najmniejsze wartosci w podsumowaniu ich srednich. Wplyw na klasyfikacje ma przede wszystkim LD1 z cecha Length. Na podstawie wykresu widzimy ze zmienne mocno zachodza na siebie i nie sa dobrze rozroznialne.
+
+Popatrzmy na jakosc klasyfikacji na wybranych parach zmiennych:
+```{r partimat}
+partimat(Sex ~ Length + Diameter + Height + Age, data=train.krab, method="lda")
+partimat(Sex ~ Weight + Shucked.Weight + Viscera.Weight + Shell.Weight, data=train.krab,method="lda")
+```
+
+Wniosek: Jakosc klasyfikacji jest na dosc niskim poziomie, poniewaz nawet dla zmiennych o duzej korelacji wykazuje on poziom bledu na poziomie okolo 48%.
+
+Sprawdzmy teraz calkowite sprawdzenie jakosci klasyfikacji z uzyciem LDA:
+```{r macierz bledu}
+train.krab$Sex<-as.factor(train.krab$Sex)
+predict(lda.krab,train.krab)->pre.train
+cat("Dane treningowe:","\n")
+table(train.krab$Sex,pre.train$class)
+
+predict(lda.krab,test.krab)->pre.test
+cat("Dane testowe:","\n")
+table(test.krab$Sex,pre.test$class)
+```
+
+Wniosek: Model w niewielkiej wiekszosci przypadkow poprawnie ocenil plec krabow, jednak czesto mocno mylil sie pomiedzy plcia meska (M) i zenska (F). Najlepiej wyszla klasyfikacja dla plci nieokreslonej (I). 
+
+Sprawdzmy teraz analize z uzyciem QDA: 
+```{r qda}
+set.seed(12345)
+train.ind.q<-sample(c(TRUE,FALSE),nrow(krab),prob=c(0.7,0.3),replace=T)
+train.krab.q<-krab[train.ind.q,]
+test.krab.q<-krab[!train.ind.q,]
+qda(Sex~.,data=train.krab.q)->qda.krab
+qda.krab
+```
+
+Wniosek: Rozlozenie prawdopodobienstw jest takie samo jak w przypadku LDA.
+
+Sprawdzmy macierz bledu dla QDA:
+```{r macierz bledu QDA}
+train.krab.q$Sex<-as.factor(train.krab.q$Sex)
+predict(qda.krab,train.krab.q)->pre.train.q
+cat("Dane treningowe:","\n")
+table(train.krab.q$Sex,pre.train.q$class)
+
+predict(qda.krab,test.krab.q)->pre.test.q
+cat("Dane testowe:","\n")
+table(test.krab.q$Sex,pre.test.q$class)
+```
+
+Wniosek: W przypadku QDA mamy troche inaczej rozlozone nasze wyniki danych testowych. Mianowicie o wiele wiecej sklasyfikowano plci nieokreslonej w poprawny sposob, jednak nadal widzimy mocne podobienstwa miedzy klasyfikacja plci meskiej i zenskiej. Sa minimalne przewagi w poprawnej klasyfikacji, jednak nadal jest ona na slabym poziomie.
+
+## Wnioski koncowe
+Na podstawie danych zgromadzonych na temat krabow hodowlanych i ich cech fizycznych moglismy stwierdzic wiele zaleznosci. Przede wszystkim zmienna Weight wyroznila sie znaczaca zmiennoscia oraz duzym wplywem na analizowane dane. Zmienne Diameter oraz Length sa ze soba najbardziej skorelowane i najbardziej na siebie oddzialuja. Ale warto zaznaczyc, ze tak naprawde wszystkie zmienne posiadaja znaczna korelacje i na siebie w jakims stopniu oddzialuja. Najmniejsza korelacje ma zmienna Age i oznacza to, ze wiek u krabow nie jest az tak zalezny od innych czynnikow. Za to, wszystkie zmienne dotyczace wagi sa miedzy soba mocno skorelowane. Przy zmiennej Height wiemy za to, ze posiada ona pewne wartosci odstajace, ktore wplywaja na jej asymetrie i na tworzenie roznych modeli klasyfikacyjnych, poniewaz w jakims stopniu zakloca ona wyniki. Rozklady danych sa jednomodalne, zatem wiekszosc danych koncentruje sie wokol jednej wartosci.
+
+Przy probach redukcji wymiaru metoda PCA oraz UMAP widoczne jest jak bardzo plec meska i zenska u krabow nie jest az tak bardzo rozroznialna i zadna cecha ich miedzy soba nie rozroznia. Natomiast moglismy zauwazyc na podstawie kolejnych analiz, ze to plec nieokreslona byla najlepsza do wytypowania przez modele, poniewaz mozna ja bylo najlatwiej rozroznic. Na podstawie danych prob klastrowania widzimy, ze sie one od siebie znacznie roznia i kazda metoda dala rozny wniosek. Oznacza to zatem, ze optymalny numer klastrow, w tym modelu, waha sie pomiedzy 2 a 4. Przy zastosowaniu metody klasyfikacji pod nadzorem z wykorzystaniem lasu losowego uzyskalismy niepowodzenie, poniewaz wynikiem koncowym bylo 61% bledu klasyfikacyjnego. Natomiast przy doborze danych treningowych oraz testowych dalo sie zoptymalizowac ten blad do 45%. Oznacza to zatem, ze ten typ modelu nie jest dobry do tego zbioru danych. Czesto wystepowaly problemy z klasyfikacja plci meskiej i zenskiej w poprawny sposob. 
+
+Przy uzyciu metody analizy z wykorzystaniem LDA i QDA dochodzimy do tych samych wnioskow, ktore mowia nam o tym, ze model czesto myli sie pomiedzy plciami zenska i meska, jednak rozroznial plec nieokreslona na o wiele wyzszym poziomie. Zatem kraby o plci meskiej i zenskiej sie od siebie, az tak nie roznia, natomiast gdy dochodzi do pomiarow krabow o plci nieokreslonej to juz latwiej nam rozroznic o jakie wyniki moze chodzic. 
+
+Rezultaty te sugeruja potrzebe dalszych badan w celu optymalizacji modeli klasyfikacyjnych oraz poszukiwania dodatkowych cech, ktore moglyby lepiej rozrozniac plec krabow hodowlanych.
